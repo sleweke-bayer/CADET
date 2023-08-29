@@ -33,7 +33,8 @@
 			{ "type": "ScalarComponentDependentParameter", "varName": "kD", "confName": "MPM_KD"},
 			{ "type": "ScalarComponentDependentParameter", "varName": "qMax", "confName": "MPM_QMAX"},
 			{ "type": "ScalarComponentDependentParameter", "varName": "gamma", "confName": "MPM_GAMMA"},
-			{ "type": "ScalarComponentDependentParameter", "varName": "beta", "confName": "MPM_BETA"}
+			{ "type": "ScalarComponentDependentParameter", "varName": "beta", "confName": "MPM_BETA"},
+			{ "type": "ScalarComponentDependentParameter", "varName": "kappa", "confName": "MPM_KAPPA"}
 		]
 }
 </codegen>*/
@@ -58,8 +59,8 @@ inline const char* MPMLangmuirParamHandler::identifier() CADET_NOEXCEPT { return
 inline bool MPMLangmuirParamHandler::validateConfig(unsigned int nComp, unsigned int const* nBoundStates)
 {
 	if ((_kA.size() != _kD.size()) || (_kA.size() != _qMax.size()) || (_kA.size() != _gamma.size())
-		|| (_kA.size() != _beta.size()) || (_kA.size() < nComp))
-		throw InvalidParameterException("MPM_KA, MPM_KD, MPM_QMAX, MPM_GAMMA, and MPM_BETA have to have the same size");
+		|| (_kA.size() != _beta.size()) || (_kA.size() < nComp) || (_kappa.size() < nComp))
+		throw InvalidParameterException("MPM_KA, MPM_KD, MPM_QMAX, MPM_GAMMA, MPM_BETA, and MPM_KAPPA have to have the same size");
 
 	return true;
 }
@@ -69,8 +70,8 @@ inline const char* ExtMPMLangmuirParamHandler::identifier() CADET_NOEXCEPT { ret
 inline bool ExtMPMLangmuirParamHandler::validateConfig(unsigned int nComp, unsigned int const* nBoundStates)
 {
 	if ((_kA.size() != _kD.size()) || (_kA.size() != _qMax.size()) || (_kA.size() != _gamma.size())
-		|| (_kA.size() != _beta.size()) || (_kA.size() < nComp))
-		throw InvalidParameterException("MPM_KA, MPM_KD, MPM_QMAX, MPM_GAMMA, and MPM_BETA have to have the same size");
+		|| (_kA.size() != _beta.size()) || (_kA.size() < nComp) || (_kappa.size() < nComp))
+		throw InvalidParameterException("MPM_KA, MPM_KD, MPM_QMAX, MPM_GAMMA, MPM_BETA, and MPM_KAPPA have to have the same size");
 
 	return true;
 }
@@ -80,7 +81,7 @@ inline bool ExtMPMLangmuirParamHandler::validateConfig(unsigned int nComp, unsig
  * @brief Defines the mobile phase modulator Langmuir binding model
  * @details Implements the mobile phase modulator Langmuir adsorption model: \f[ \begin{align} 
  *              \frac{\mathrm{d}q_0}{\mathrm{d}t} &= 0 \\
- *              \frac{\mathrm{d}q_i}{\mathrm{d}t} &= k_{a,i} c_{p,i} e^{\gamma_i c_{p,0}} q_{\text{max},i} \left( 1 - \sum_j \frac{q_j}{q_{\text{max},j}} \right) - k_{d,i} c_{p,0}^{\beta_i} q_i
+ *              \frac{\mathrm{d}q_i}{\mathrm{d}t} &= k_{a,i} c_{p,i} e^{\gamma_i c_{p,0}} q_{\text{max},i} \left( 1 - \sum_j \frac{q_j}{q_{\text{max},j}} \right) - k_{d,i} e^{\kappa_i c_{p,0}} c_{p,0}^{\beta_i} q_i
  *          \end{align} \f]
  *          While @f$ \gamma @f$ describes hydrophobicity, @f$ \beta @f$ accounts for ion-exchange characteristics.
  *          Multiple bound states are not supported. Component @c 0 is assumed to be salt, which is also assumed to be inert.
@@ -165,7 +166,10 @@ protected:
 				continue;
 
 			// Residual
-			res[bndIdx] = static_cast<ParamType>(p->kD[i]) * pow(yCp[0], static_cast<ParamType>(p->beta[i])) * y[bndIdx] - static_cast<ParamType>(p->kA[i]) * exp(yCp[0] * static_cast<ParamType>(p->gamma[i])) * yCp[i] * static_cast<ParamType>(p->qMax[i]) * qSum;
+			if (p->beta[i] == 0.0)
+				res[bndIdx] = static_cast<ParamType>(p->kD[i]) * exp(yCp[0] * static_cast<ParamType>(p->kappa[i])) * y[bndIdx] - static_cast<ParamType>(p->kA[i]) * exp(yCp[0] * static_cast<ParamType>(p->gamma[i])) * yCp[i] * static_cast<ParamType>(p->qMax[i]) * qSum;
+			else
+				res[bndIdx] = static_cast<ParamType>(p->kD[i]) * exp(yCp[0] * static_cast<ParamType>(p->kappa[i])) * pow(yCp[0], static_cast<ParamType>(p->beta[i])) * y[bndIdx] - static_cast<ParamType>(p->kA[i]) * exp(yCp[0] * static_cast<ParamType>(p->gamma[i])) * yCp[i] * static_cast<ParamType>(p->qMax[i]) * qSum;
 
 			// Next bound component
 			++bndIdx;
@@ -211,14 +215,18 @@ protected:
 			if (_nBoundStates[i] == 0)
 				continue;
 
+			const double kappa = static_cast<double>(p->kappa[i]);
 			const double gamma = static_cast<double>(p->gamma[i]);
 			const double beta = static_cast<double>(p->beta[i]);
 			const double qMax = static_cast<double>(p->qMax[i]);
 			const double ka = static_cast<double>(p->kA[i]) * exp(gamma * yCp[0]);
-			const double kdRaw = static_cast<double>(p->kD[i]);
+			const double kd = static_cast<double>(p->kD[i]) * exp(kappa * yCp[0]);
 
 			// dres_i / dc_{p,0}
-			jac[-bndIdx - offsetCp] = -ka * yCp[i] * qMax * qSum * gamma + kdRaw * beta * y[bndIdx] * pow(yCp[0], beta - 1.0);
+			if (beta == 0.0)
+				jac[-bndIdx - offsetCp] = -ka * yCp[i] * qMax * qSum * gamma + kd * y[bndIdx] * kappa;
+			else
+				jac[-bndIdx - offsetCp] = -ka * yCp[i] * qMax * qSum * gamma + kd * y[bndIdx] * (pow(yCp[0], beta) * kappa + beta * pow(yCp[0], beta - 1.0));
 			// Getting to c_{p,0}: -bndIdx takes us to q_0, another -offsetCp to c_{p,0}.
 			//                     This means jac[bndIdx - offsetCp] corresponds to c_{p,0}.
 
@@ -246,7 +254,10 @@ protected:
 			}
 
 			// Add to dres_i / dq_i
-			jac[0] += kdRaw * pow(yCp[0], beta);
+			if (beta == 0.0)
+				jac[0] += kd;
+			else
+				jac[0] += kd * pow(yCp[0], beta);
 
 			// Advance to next flux and Jacobian row
 			++bndIdx;
